@@ -91,8 +91,13 @@ final class RemoteApproval {
                 guard let r = tg.api("getUpdates",
                                      ["timeout": 20, "offset": offset,
                                       "allowed_updates": ["callback_query"]],
-                                     timeout: 30),
-                      let updates = r["result"] as? [[String: Any]] else { continue }
+                                     timeout: 30) else { continue }
+                guard r["ok"] as? Bool == true else {
+                    Log.info("getUpdates error: \(r["description"] as? String ?? "\(r)")")
+                    Thread.sleep(forTimeInterval: 2)  // error responses return fast; don't hammer
+                    continue
+                }
+                guard let updates = r["result"] as? [[String: Any]] else { continue }
                 for u in updates {
                     if let id = u["update_id"] as? Int64 { offset = max(offset, id + 1) }
                     guard let cq = u["callback_query"] as? [String: Any],

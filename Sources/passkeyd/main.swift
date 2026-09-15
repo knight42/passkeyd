@@ -47,8 +47,14 @@ func setupTelegram() -> Never {
     var offset: Int64 = 0
     let deadline = Date().addingTimeInterval(120)
     while Date() < deadline {
-        guard let r = tg.api("getUpdates", ["timeout": 20, "offset": offset], timeout: 30),
-              let updates = r["result"] as? [[String: Any]] else { continue }
+        guard let r = tg.api("getUpdates", ["timeout": 20, "offset": offset], timeout: 30) else { continue }
+        guard r["ok"] as? Bool == true else {
+            // e.g. 409 Conflict: another process (webhook or long-poll) owns this
+            // bot and is eating its updates — passkeyd needs its own bot token.
+            print("telegram getUpdates error: \(r["description"] as? String ?? "\(r)")")
+            exit(1)
+        }
+        guard let updates = r["result"] as? [[String: Any]] else { continue }
         for u in updates {
             if let id = u["update_id"] as? Int64 { offset = max(offset, id + 1) }
             if let m = u["message"] as? [String: Any],
