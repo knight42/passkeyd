@@ -1,5 +1,4 @@
 import Foundation
-import Network
 import Security
 
 final class Waiter {
@@ -45,66 +44,9 @@ final class Telegram {
     }
 }
 
-/// Secondary approval path: a tiny HTTP listener that only answers for the current
-/// nonce, reachable over the tailnet while a request is pending. WireGuard is the
-/// transport security; the source-address check keeps it off the LAN/internet.
-final class ApproveHTTP {
-    private var listener: NWListener?
-    private let port: UInt16
-    private let nonce: String
-    private let waiter: Waiter
-
-    init(port: UInt16, nonce: String, waiter: Waiter) {
-        self.port = port
-        self.nonce = nonce
-        self.waiter = waiter
-    }
-
-    func start() {
-        guard let p = NWEndpoint.Port(rawValue: port), let l = try? NWListener(using: .tcp, on: p) else {
-            Log.info("approve http: port \(port) unavailable")
-            return
-        }
-        l.newConnectionHandler = { [self] conn in
-            conn.start(queue: .global())
-            conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, _, _ in
-                var status = "404 Not Found"
-                var body = "unknown"
-                if let d = data,
-                   let line = String(data: d, encoding: .utf8)?.components(separatedBy: "\r\n").first,
-                   self.allowed(conn) {
-                    if line.hasPrefix("GET /a/\(self.nonce) ") {
-                        self.waiter.resolve(true)
-                        status = "200 OK"
-                        body = "approved"
-                    } else if line.hasPrefix("GET /d/\(self.nonce) ") {
-                        self.waiter.resolve(false)
-                        status = "200 OK"
-                        body = "denied"
-                    }
-                }
-                let resp = "HTTP/1.1 \(status)\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: \(body.utf8.count)\r\n\r\n\(body)"
-                conn.send(content: Data(resp.utf8), completion: .contentProcessed { _ in conn.cancel() })
-            }
-        }
-        l.start(queue: .global())
-        listener = l
-    }
-
-    func stop() { listener?.cancel() }
-
-    private func allowed(_ conn: NWConnection) -> Bool {
-        guard case let .hostPort(host, _)? = conn.currentPath?.remoteEndpoint else { return false }
-        let h = "\(host)"
-        if h.hasPrefix("127.") || h.hasPrefix("::1") { return true }
-        let parts = h.split(separator: ".")
-        if parts.count == 4, parts[0] == "100", let b = Int(parts[1]), (64...127).contains(b) {
-            return true  // tailscale CGNAT range 100.64.0.0/10
-        }
-        return h.hasPrefix("fd7a:115c:a1e0")  // tailscale IPv6 range
-    }
-}
-
+/// Remote approval over Telegram only: the daemon long-polls getUpdates for the
+/// inline-button callback, so everything is outbound HTTPS — no inbound listener,
+/// no tailnet/VPN required.
 final class RemoteApproval {
     private let cfg: Config
 
@@ -120,22 +62,14 @@ final class RemoteApproval {
         let nonce = nonceBytes.map { String(format: "%02x", $0) }.joined()
 
         let waiter = Waiter()
-        let http = ApproveHTTP(port: cfg.approvePort, nonce: nonce, waiter: waiter)
-        http.start()
-        defer { http.stop() }
-
         let tg = Telegram(token: cfg.telegramToken)
         let host = ProcessInfo.processInfo.hostName
-        let linkHost = cfg.tailnetHost.isEmpty ? Net.tailscaleIPv4() : cfg.tailnetHost
-        var text = """
+        let text = """
         🔐 passkey approval
         \(req.operation): \(req.rpId)
         user: \(req.userName)
         from: \(host)
         """
-        if let linkHost {
-            text += "\nfallback: http://\(linkHost):\(cfg.approvePort)/a/\(nonce)"
-        }
         let markup: [String: Any] = ["inline_keyboard": [[
             ["text": "✅ Approve", "callback_data": "a:\(nonce)"],
             ["text": "❌ Deny", "callback_data": "d:\(nonce)"],

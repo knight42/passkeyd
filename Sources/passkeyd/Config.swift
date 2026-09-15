@@ -4,10 +4,6 @@ struct Config: Codable {
     var telegramToken: String = ""
     var telegramChatId: Int64 = 0
     var allowedRps: [String] = ["okta.com", "webauthn.io"]
-    /// Host for the fallback approve link. Empty = auto-detect this machine's
-    /// tailscale IPv4 at request time.
-    var tailnetHost: String = ""
-    var approvePort: UInt16 = 8378
     var remoteTimeoutSec: Int = 120
     // Prompt-fatigue backstop, not a security boundary (every prompt still
     // needs an explicit approve). One RP sign-in can burn several attempts

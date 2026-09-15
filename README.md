@@ -14,8 +14,8 @@ when you're away**.
 - **Away from your Mac**: the sign-in request lands in Telegram with full
   context (site, account, machine) and ✅ Approve / ❌ Deny buttons. A tap
   unblocks whatever was waiting — for example an agent logging in to Okta on
-  your machine. A fallback approve link over your tailnet is included in every
-  message. Works with the screen locked.
+  your machine. The daemon long-polls Telegram for your tap, so it needs no
+  inbound connectivity — no VPN or tailnet. Works with the screen locked.
 - **Everything else stays untouched**: sites not on your allowlist, conditional
   autofill, and your native iCloud Keychain passkeys keep working exactly as
   before. If passkeyd has no credential for a site, the request falls through
