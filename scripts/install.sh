@@ -25,10 +25,11 @@ sed -e "s|__BINARY__|$BIN_DIR/passkeyd|" -e "s|__EXTENSION_ID__|$EXT_ID|" \
 
 echo "installed: $MANIFEST_DIR/com.zack.passkeyd.json -> $BIN_DIR/passkeyd"
 
-# The binary is ad-hoc signed, so the keychain treats every new build as a
-# new app: the first key access re-prompts for authorization. Trigger that
-# now, while someone is at the Mac — otherwise the prompt pops invisibly
-# behind a locked screen during a remote sign-in and hangs it.
+# If the binary's signature changed (ad-hoc build, or first install under a
+# new identity), the keychain treats it as a new app: the first key access
+# re-prompts for authorization. Trigger that now, while someone is at the
+# Mac — otherwise the prompt pops invisibly behind a locked screen during a
+# remote sign-in and hangs it.
 if "$BIN_DIR/passkeyd" list | grep -q .; then
   echo 'exercising stored keys — click "Always Allow" on the keychain prompt:'
   "$BIN_DIR/passkeyd" test-sign
