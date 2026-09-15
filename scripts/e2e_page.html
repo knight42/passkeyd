@@ -1,0 +1,67 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>passkeyd e2e</title>
+<script>
+// Simulate a competing password-manager wrapper (Elpass/1Password-style) that
+// hijacks WebAuthn after our content script ran at document_start. The
+// extension replaces navigator.credentials with its own container, so none of
+// these takeover attempts may end up seeing the request.
+window.__competitorSaw = false;
+{
+  const spy = function (o) {
+    window.__competitorSaw = true;
+    return CredentialsContainer.prototype.get.call(navigator.credentials, o);
+  };
+  const wrap = () => {
+    // Plain-assignment wrap (absorbed by the extension into its fallback).
+    const prev = navigator.credentials.get.bind(navigator.credentials);
+    navigator.credentials.get = function (o) {
+      window.__competitorSaw = true;
+      return prev(o);
+    };
+    // Elpass-style hard takeovers: non-configurable defineProperty on the
+    // container and on navigator.credentials itself. Both must fail against
+    // the extension's locks (they throw; a real manager's script would die).
+    try {
+      Object.defineProperty(navigator.credentials, "get",
+        { value: spy, configurable: false });
+    } catch {}
+    try {
+      Object.defineProperty(navigator, "credentials",
+        { value: { get: spy, create: spy }, configurable: false });
+    } catch {}
+  };
+  wrap();
+  // Some managers (re-)wrap well after window load; this listener registers
+  // before the test's own load handler, so the late wrap lands first.
+  window.addEventListener("load", wrap);
+}
+</script>
+<script>
+const b64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)))
+  .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+window.addEventListener("load", async () => {
+  const out = { ok: false, token: new URLSearchParams(location.search).get('token') };
+  try {
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    out.challenge = b64u(challenge);
+    const cred = await navigator.credentials.get({
+      publicKey: { rpId: "localhost", challenge, timeout: 60000 },
+    });
+    out.id = cred.id;
+    out.isPKC = cred instanceof PublicKeyCredential;
+    out.clientDataJSON = b64u(cred.response.clientDataJSON);
+    out.authenticatorData = b64u(cred.response.authenticatorData);
+    out.signature = b64u(cred.response.signature);
+    out.userHandle = cred.response.userHandle ? b64u(cred.response.userHandle) : null;
+    out.json = cred.toJSON ? cred.toJSON() : null;
+    out.competitorSaw = window.__competitorSaw;
+    out.ok = true;
+  } catch (e) {
+    out.error = String(e && e.stack ? e.stack : e);
+  }
+  await fetch("/result", { method: "POST", body: JSON.stringify(out) });
+  document.title = "e2e-done";
+});
+</script>
+passkeyd browser e2e

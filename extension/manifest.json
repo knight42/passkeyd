@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "passkeyd bridge",
+  "version": "0.1.0",
+  "description": "Routes WebAuthn on allowlisted sites to the local passkeyd authenticator.",
+  "permissions": [
+    "nativeMessaging",
+    "storage"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.okta.com/*",
+        "https://webauthn.io/*",
+        "http://localhost/*"
+      ],
+      "js": [
+        "content-isolated.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://*.okta.com/*",
+        "https://webauthn.io/*",
+        "http://localhost/*"
+      ],
+      "js": [
+        "content-main.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA3xC+omESkdDvu+liTFyLjQAxPn535uYgItkHFWvtnCHt6s7lmhDJT2gVLroVV1gXRwldtjANdzA15ckmpOWAQHDc+sXxjKfEpuJB36odtKIAX6qCG6Clv/CqP1ZoR6LkHV5/FUmWlF++FD8/5A+8ozZAYPEfNWG9MwRtMkg4obKkibSbtuZEvPa4m9XVNfKZOPqu315X1fpXfRn3Ob6UqX6iZRPWzhgEV9cS0CN2+LBXzkrIQZRiJZCVOBkDB5eC+LmKY9BFzdyHB77ezoi5q7JrKdhHaKUpb11UfZcZz8uUykVfc+8Kum8JkGNvH2W+sBRzN9pqv44eNwRjmDOdqwIDAQAB"
+}

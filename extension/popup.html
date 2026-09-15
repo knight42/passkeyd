@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  body { font: 13px system-ui; padding: 12px; width: 260px; }
+  p { color: #666; margin: 4px 0 12px; }
+  label { display: block; }
+</style>
+<label><input type="checkbox" id="cap"> Capture passkey registrations</label>
+<p>Off by default. Turn on before registering a passkey you want passkeyd to
+hold; leave off to enroll native browser/iCloud passkeys as usual. Sign-ins
+are unaffected either way.</p>
+<script src="popup.js"></script>
