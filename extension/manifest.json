@@ -17,6 +17,7 @@
     {
       "matches": [
         "https://*.okta.com/*",
+        "https://github.com/*",
         "https://webauthn.io/*",
         "http://localhost/*"
       ],
@@ -28,6 +29,7 @@
     {
       "matches": [
         "https://*.okta.com/*",
+        "https://github.com/*",
         "https://webauthn.io/*",
         "http://localhost/*"
       ],
