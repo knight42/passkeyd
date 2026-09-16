@@ -53,6 +53,15 @@ matters more than features here. Read this before changing anything.
 - **Chrome for Testing needs `--use-mock-keychain`**, or it blocks on a macOS
   Keychain prompt (Chrome Safe Storage, `userCanceledErr -128`) before it ever
   navigates — headless has no way to answer that prompt and the run just hangs.
+- **The Touch ID panel does not block the browser.** It is drawn by the system
+  agent `coreautha`, which becomes the frontmost app while an approval is
+  pending, but it holds no input grab: measured by posting real HID events at a
+  Chrome window with a panel up, the page still received them. Exactly the
+  first click is swallowed re-activating the browser window, so a person who
+  clicks once and sees nothing happen concludes the panel is modal — it isn't,
+  the second click lands. This means the page can navigate (Okta's "Verify with
+  something else") while passkeyd is still waiting for approval, by hand as
+  well as from a userscript; the extension must stay correct under that.
 - Unsigned binaries can't use the Secure Enclave / data-protection keychain
   (`errSecMissingEntitlement`); the daemon auto-falls back to software keys.
   Don't "fix" the SE probe by removing `kSecUseDataProtectionKeychain`.
