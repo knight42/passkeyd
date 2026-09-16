@@ -5,8 +5,9 @@ protocol first, then lets the page's navigator.credentials.get() flow through
 content-main -> content-isolated -> service worker -> native host -> signature,
 and verifies the assertion with openssl against the registered public key.
 
-Prereqs: host manifest installed for the pinned extension id, debug build,
-PASSKEYD_SKIP_APPROVAL=1 (exported to Chrome so the spawned host inherits it).
+Prereqs: debug build (`swift build`) and a playwright-cached Chrome for Testing.
+The host manifest is written into the throwaway user-data-dir, and
+PASSKEYD_SKIP_APPROVAL=1 is exported to Chrome so the spawned host inherits it.
 
 Uses check() instead of assert: this environment sets PYTHONOPTIMIZE=1, which
 silently strips assert statements.
@@ -27,8 +28,24 @@ import uuid
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(ROOT, ".build/debug/passkeyd")
 PORT = 8399
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 TOKEN = uuid.uuid4().hex
+# Pinned by the "key" entry in extension/manifest.json.
+EXT_ID = "joblheonfgikgagbnboplknpibakflpf"
+
+
+def find_chrome():
+    """Branded Chrome >= 137 ignores --load-extension; use the playwright-cached
+    Chrome for Testing binary (it also reads native messaging manifests from
+    <user-data-dir>/NativeMessagingHosts, so the run needs no global install)."""
+    import glob
+    candidates = sorted(glob.glob(os.path.expanduser(
+        "~/Library/Caches/ms-playwright/chromium-*/chrome-mac-*/"
+        "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+    )))
+    if not candidates:
+        raise RuntimeError("no playwright Chrome for Testing found; "
+                           "run: npx playwright install chromium")
+    return candidates[-1]
 
 
 def check(cond, msg):
@@ -110,16 +127,31 @@ def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     udd = tempfile.mkdtemp(prefix="passkeyd-e2e-chrome-")
+    nmh_dir = os.path.join(udd, "NativeMessagingHosts")
+    os.makedirs(nmh_dir)
+    with open(os.path.join(nmh_dir, "com.zack.passkeyd.json"), "w") as f:
+        json.dump({
+            "name": "com.zack.passkeyd",
+            "description": "passkeyd native messaging host (e2e, debug build)",
+            "path": BIN,
+            "type": "stdio",
+            "allowed_origins": [f"chrome-extension://{EXT_ID}/"],
+        }, f)
     env = dict(os.environ, PASSKEYD_SKIP_APPROVAL="1")
     chrome = subprocess.Popen([
-        CHROME, "--headless=new", f"--user-data-dir={udd}",
+        # --use-mock-keychain is required: without it Chrome for Testing blocks
+        # on a macOS Keychain (Chrome Safe Storage) prompt before ever
+        # navigating, and headless has no way to answer it.
+        find_chrome(), "--headless", "--use-mock-keychain",
+        f"--user-data-dir={udd}",
         f"--load-extension={os.path.join(ROOT, 'extension')}",
         "--no-first-run", "--disable-sync", "--disable-background-networking",
         f"http://localhost:{PORT}/?token={TOKEN}",
     ], env=env, stdout=subprocess.DEVNULL,
        stderr=open("/tmp/passkeyd-e2e-chrome.log", "w"))
 
-    ok = result_ready.wait(timeout=45)
+    # First launch initializes the throwaway profile; give it headroom.
+    ok = result_ready.wait(timeout=90)
     chrome.terminate()
     server.shutdown()
     shutil.rmtree(udd, ignore_errors=True)
