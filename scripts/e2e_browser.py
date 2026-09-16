@@ -38,14 +38,20 @@ def find_chrome():
     Chrome for Testing binary (it also reads native messaging manifests from
     <user-data-dir>/NativeMessagingHosts, so the run needs no global install)."""
     import glob
-    candidates = sorted(glob.glob(os.path.expanduser(
+    import re
+    candidates = glob.glob(os.path.expanduser(
         "~/Library/Caches/ms-playwright/chromium-*/chrome-mac-*/"
         "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
-    )))
+    ))
     if not candidates:
-        raise RuntimeError("no playwright Chrome for Testing found; "
-                           "run: npx playwright install chromium")
-    return candidates[-1]
+        raise RuntimeError("no playwright Chrome for Testing found; run: "
+                           "npx --yes playwright@latest install chromium")
+    # Sort by the numeric build id, not lexically: "chromium-1000" sorts before
+    # "chromium-999" as a string.
+    def build_id(p):
+        m = re.search(r"/chromium-(\d+)/", p)
+        return int(m.group(1)) if m else -1
+    return max(candidates, key=build_id)
 
 
 def check(cond, msg):

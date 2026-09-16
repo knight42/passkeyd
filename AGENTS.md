@@ -45,7 +45,14 @@ matters more than features here. Read this before changing anything.
 - Branded Google Chrome ≥137 ignores `--load-extension`; automated browser e2e
   uses the playwright-cached **Chrome for Testing** binary, which reads native
   messaging manifests from `<user-data-dir>/NativeMessagingHosts` (the real
-  Chrome reads `~/Library/Application Support/Google/Chrome/NativeMessagingHosts`).
+  Chrome reads `~/Library/Application Support/Google/Chrome/NativeMessagingHosts`),
+  so the e2e writes its own manifest into the throwaway profile.
+  `--disable-features=DisableLoadExtensionCommandLineSwitch` does NOT bring the
+  switch back on branded Chrome 152 — it was tried and the extension still
+  never injected.
+- **Chrome for Testing needs `--use-mock-keychain`**, or it blocks on a macOS
+  Keychain prompt (Chrome Safe Storage, `userCanceledErr -128`) before it ever
+  navigates — headless has no way to answer that prompt and the run just hangs.
 - Unsigned binaries can't use the Secure Enclave / data-protection keychain
   (`errSecMissingEntitlement`); the daemon auto-falls back to software keys.
   Don't "fix" the SE probe by removing `kSecUseDataProtectionKeychain`.
@@ -63,9 +70,21 @@ matters more than features here. Read this before changing anything.
 
 ## Testing requirements
 
+One-time setup for the browser e2e (idempotent; skips the download if the
+browser is already cached):
+
+```
+npx --yes playwright@latest install chromium   # Chrome for Testing -> ~/Library/Caches/ms-playwright
+```
+
+Any recent Chrome for Testing works — the constraint is that it must NOT be
+branded Chrome (see the `--load-extension` gotcha above). `find_chrome()` in
+`scripts/e2e_browser.py` picks the highest-numbered cached build.
+
 Any change must pass, in order:
 
 ```
+swift build                         # e2e runs the debug binary
 swift test                          # unit: CBOR/authData/rpId/store/approve-http
 python3 scripts/e2e_protocol.py    # protocol e2e incl. openssl signature verify
 python3 scripts/e2e_browser.py     # full chain in Chrome for Testing
@@ -84,6 +103,16 @@ CryptoKit) verification round-trip, not just "no error".
   MAIN world — it must not use `chrome.*` APIs; relay through
   `content-isolated.js` via `window.postMessage`.
 - Unknown requests must **fall through to the browser's native WebAuthn**
-  (return `origGet`/`origCreate`), never break the page.
+  (return `ORIG.get`/`ORIG.create`), never break the page. **One deliberate
+  exception**: a modal request arriving while another is already inside
+  passkeyd is rejected with `NotAllowedError`, never forwarded — forwarding it
+  pops the platform (iCloud Keychain) sheet next to our own approval prompt.
+  That is what the `interceptingGet`/`interceptingCreate` guards are for; do
+  not "simplify" them back into the single reentrancy flag they replaced.
+  `forwardingGet`/`forwardingCreate` are the separate, genuinely re-entrant
+  case (a wrapper in the ORIG chain calling back into us) and must stay
+  narrow — never hold either across a passkeyd round-trip.
+- Conditional-mediation (`mediation: "conditional"`) requests pass through
+  unguarded and stay pending for the life of the page; no flag may span them.
 - Keep the extension allowlist (`manifest.json` matches) in sync with
   `allowedRps` in the daemon config.
