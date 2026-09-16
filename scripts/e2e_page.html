@@ -45,9 +45,42 @@ window.addEventListener("load", async () => {
   try {
     const challenge = crypto.getRandomValues(new Uint8Array(32));
     out.challenge = b64u(challenge);
-    const cred = await navigator.credentials.get({
+
+    // A pre-aborted request must reject with AbortError immediately and must
+    // not consume the intercept window.
+    try {
+      const ac = new AbortController();
+      ac.abort();
+      await navigator.credentials.get({
+        publicKey: { rpId: "localhost", challenge, timeout: 60000 },
+        signal: ac.signal,
+      });
+      out.abortName = "no-error";
+    } catch (e) {
+      out.abortName = e.name;
+    }
+
+    // An overlapping modal request while one is inside passkeyd must fail
+    // like the native stack fails overlapping requests ("already pending"),
+    // not fall through to the platform authenticator.
+    const p1 = navigator.credentials.get({
       publicKey: { rpId: "localhost", challenge, timeout: 60000 },
     });
+    try {
+      await navigator.credentials.get({
+        publicKey: {
+          rpId: "localhost",
+          challenge: crypto.getRandomValues(new Uint8Array(32)),
+          timeout: 60000,
+        },
+      });
+      out.overlapName = "no-error";
+    } catch (e) {
+      out.overlapName = e.name;
+      out.overlapMessage = e.message;
+    }
+
+    const cred = await p1;
     out.id = cred.id;
     out.isPKC = cred instanceof PublicKeyCredential;
     out.clientDataJSON = b64u(cred.response.clientDataJSON);

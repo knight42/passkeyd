@@ -23,11 +23,20 @@
     get: realContainer.get.bind(realContainer),
     create: realContainer.create.bind(realContainer),
   };
-  // Reentrancy guards: a wrapper in the ORIG chain may fall back into us
-  // (e.g. via a live navigator.credentials reference); nested calls go
-  // straight to NATIVE so mutually-fallback wrappers can't recurse.
-  let inGet = false;
-  let inCreate = false;
+  // Two guard windows, kept separate on purpose:
+  // - forwarding*: we are awaiting ORIG for a modal WebAuthn request; a
+  //   wrapper in that chain may fall back into us (e.g. via a live
+  //   navigator.credentials reference), and such re-entrant calls go straight
+  //   to NATIVE so mutually-fallback wrappers can't recurse.
+  // - intercepting*: a modal request is inside passkeyd (has-check or
+  //   approval). A second modal request arriving now is genuinely new, not
+  //   recursion — it must fail the way the native stack fails overlapping
+  //   requests, never fall through to NATIVE, which would pop the platform
+  //   (iCloud Keychain) sheet next to our approval prompt.
+  let forwardingGet = false;
+  let forwardingCreate = false;
+  let interceptingGet = false;
+  let interceptingCreate = false;
 
   const pending = new Map();
   let seq = 0;
@@ -61,6 +70,24 @@
           resolve({ ok: false, error: "passkeyd timeout" });
         }
       }, 180000);
+    });
+  }
+
+  // WebAuthn callers cancel via AbortSignal (Okta does when the user switches
+  // authenticators). Reject as soon as the signal fires so the intercept
+  // window frees up for the caller's next request; the daemon side of an
+  // in-flight approval runs to its own timeout.
+  function abortable(promise, signal) {
+    if (!signal) return promise;
+    return new Promise((resolve, reject) => {
+      const onAbort = () =>
+        reject(signal.reason || new DOMException("The operation was aborted.", "AbortError"));
+      if (signal.aborted) return onAbort();
+      signal.addEventListener("abort", onAbort, { once: true });
+      promise.then(
+        (v) => { signal.removeEventListener("abort", onAbort); resolve(v); },
+        (e) => { signal.removeEventListener("abort", onAbort); reject(e); },
+      );
     });
   }
 
@@ -129,44 +156,79 @@
   }
 
   const wrappedGet = async function (options) {
-    if (inGet) return NATIVE.get(options);
-    inGet = true;
+    if (forwardingGet) return NATIVE.get(options);
+    const pk = options && options.publicKey;
+    // Conditional-mediation requests fire automatically on page load and stay
+    // pending until the page aborts them; non-WebAuthn requests aren't ours
+    // either. Both pass through unguarded — no flag may span their open-ended
+    // lifetime, or every later modal request would be diverted.
+    if (!pk || (options && options.mediation === "conditional")) return ORIG.get(options);
+    if (interceptingGet) {
+      throw new DOMException("A request is already pending.", "NotAllowedError");
+    }
+    const signal = options.signal;
+    if (signal && signal.aborted) {
+      throw signal.reason || new DOMException("The operation was aborted.", "AbortError");
+    }
+    interceptingGet = true;
     try {
-      const pk = options && options.publicKey;
-      // Conditional-mediation requests fire automatically on page load; leave them alone.
-      if (!pk || (options && options.mediation === "conditional")) return ORIG.get(options);
       const rpId = pk.rpId || location.hostname;
       const allow = (pk.allowCredentials || []).map((c) => b64u(bufSrc(c.id)));
-      const has = await call({ op: "has", rpId, origin: window.origin, allow });
-      if (!has.ok || !has.has) return ORIG.get(options);
-
-      const cd = await clientData("webauthn.get", pk.challenge);
-      const resp = await call({
-        op: "get", rpId, origin: window.origin, clientDataHash: cd.hash, allow,
-      });
-      if (!resp.ok) {
-        throw new DOMException(resp.error || "passkeyd: not approved", "NotAllowedError");
+      const has = await abortable(call({ op: "has", rpId, origin: window.origin, allow }), signal);
+      if (has.ok && has.has) {
+        const cd = await clientData("webauthn.get", pk.challenge);
+        const resp = await abortable(call({
+          op: "get", rpId, origin: window.origin, clientDataHash: cd.hash, allow,
+        }), signal);
+        if (!resp.ok) {
+          throw new DOMException(resp.error || "passkeyd: not approved", "NotAllowedError");
+        }
+        return fabricate(resp.id, {
+          clientDataJSON: cd.bytes,
+          authenticatorData: fromB64u(resp.authenticatorData),
+          signature: fromB64u(resp.signature),
+          userHandle: resp.userHandle ? fromB64u(resp.userHandle) : null,
+        }, false);
       }
-      return fabricate(resp.id, {
-        clientDataJSON: cd.bytes,
-        authenticatorData: fromB64u(resp.authenticatorData),
-        signature: fromB64u(resp.signature),
-        userHandle: resp.userHandle ? fromB64u(resp.userHandle) : null,
-      }, false);
     } finally {
-      inGet = false;
+      interceptingGet = false;
+    }
+    // passkeyd doesn't have this credential: fall through to the ORIG chain,
+    // guarded against wrapper recursion.
+    forwardingGet = true;
+    try {
+      return await ORIG.get(options);
+    } finally {
+      forwardingGet = false;
     }
   };
 
   const wrappedCreate = async function (options) {
-    if (inCreate) return NATIVE.create(options);
-    inCreate = true;
+    if (forwardingCreate) return NATIVE.create(options);
+    const pk = options && options.publicKey;
+    if (!pk) return ORIG.create(options);
+    if (!config.captureCreate) {
+      // Normal browser/iCloud enrollment path: forward, guarded against
+      // wrapper recursion (bounded by the native sheet, unlike conditional).
+      forwardingCreate = true;
+      try {
+        return await ORIG.create(options);
+      } finally {
+        forwardingCreate = false;
+      }
+    }
+    if (interceptingCreate) {
+      throw new DOMException("A request is already pending.", "NotAllowedError");
+    }
+    const signal = options.signal;
+    if (signal && signal.aborted) {
+      throw signal.reason || new DOMException("The operation was aborted.", "AbortError");
+    }
+    interceptingCreate = true;
     try {
-      const pk = options && options.publicKey;
-      if (!pk || !config.captureCreate) return ORIG.create(options);
       const rpId = (pk.rp && pk.rp.id) || location.hostname;
       const cd = await clientData("webauthn.create", pk.challenge);
-      const resp = await call({
+      const resp = await abortable(call({
         op: "create",
         rpId,
         origin: window.origin,
@@ -178,7 +240,7 @@
         },
         algs: (pk.pubKeyCredParams || []).map((p) => p.alg),
         excludeIds: (pk.excludeCredentials || []).map((c) => b64u(bufSrc(c.id))),
-      });
+      }), signal);
       if (!resp.ok) {
         throw new DOMException(resp.error || "passkeyd: not approved", "NotAllowedError");
       }
@@ -193,7 +255,7 @@
         getTransports: () => ["hybrid"],
       }, true);
     } finally {
-      inCreate = false;
+      interceptingCreate = false;
     }
   };
 

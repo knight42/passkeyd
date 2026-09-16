@@ -161,6 +161,13 @@ def main():
     check(result.get("ok"), f"page reported failure: {json.dumps(result, indent=2)}")
     check(result["id"] == cred_id, f"credential id mismatch: {result['id']}")
     check(result.get("isPKC"), "instanceof PublicKeyCredential failed")
+    check(result.get("abortName") == "AbortError",
+          f"pre-aborted get: expected AbortError, got {result.get('abortName')}")
+    # Message pins the rejection to our guard: the headless native stack would
+    # also say NotAllowedError, but not before the first request resolves.
+    check(result.get("overlapName") == "NotAllowedError"
+          and "already pending" in (result.get("overlapMessage") or ""),
+          f"overlapping get: {result.get('overlapName')}: {result.get('overlapMessage')}")
 
     cdj = b64u_decode(result["clientDataJSON"])
     cd = json.loads(cdj)
