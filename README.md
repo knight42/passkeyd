@@ -82,6 +82,33 @@ passkeyd test-approval        # one approval round-trip
   directly. Signing the binary with a developer identity and Secure Enclave
   keys raises that bar. This tool is for personal use on a machine you trust.
 
+## Known risks — read before adopting
+
+- **A Telegram tap mints a "user verified" assertion.** Remote approvals set
+  the WebAuthn UV flag with no biometric at signing time. Sites believe the
+  user was verified; in reality, whoever controls your Telegram session (an
+  unlocked phone, a leaked bot token) can approve sign-ins whenever the
+  daemon is reachable. Guard your phone and bot token accordingly, and give
+  the bot its own dedicated token — a second consumer of the same bot eats
+  the approval callbacks.
+- **Software keys are extractable.** Without a paid developer identity the
+  binary can't use the Secure Enclave, so keys are ordinary login-keychain
+  items: anything running as your user that can answer (or has ACL access to)
+  the keychain can sign with — or export — them. The approval gate is policy,
+  not a hardware boundary.
+- **The daemon trusts its caller's origin claim.** Chrome enforces which
+  extension may launch the native host, but any local process can run the
+  binary directly and claim an allowlisted origin. Approvals (Touch ID /
+  Telegram, with the site name in the prompt) are the backstop; read the
+  prompt before tapping.
+- **Phishing resistance is only as good as the allowlist check.** RP ID ↔
+  origin binding is enforced in the extension and the daemon, but unlike a
+  platform authenticator there is no browser-level attestation of the origin.
+- The hourly rate limit is prompt-fatigue protection, not a security control.
+- Credentials are device-bound and don't sync. Losing the Mac (or the
+  keychain) loses them — keep a native iCloud Keychain passkey enrolled as a
+  backup on every important account.
+
 ## Development
 
 ```
