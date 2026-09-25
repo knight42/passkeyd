@@ -23,18 +23,19 @@ when you're away**.
 
 ## Install
 
-1. Build and load the extension: `chrome://extensions` → Developer mode →
-   *Load unpacked* → the `extension/` directory. Note the extension ID.
-2. Recommended one-time step: `scripts/setup-codesign.sh` creates a
+1. Recommended one-time step: `scripts/setup-codesign.sh` creates a
    self-signed code-signing identity (`passkeyd-codesign`). With it,
    `install.sh` signs the binary, so the keychain's **Always Allow** survives
    rebuilds; without it, every reinstall re-asks once.
-3. `scripts/install.sh <extension-id>` — builds (and signs) the release
-   binary and installs the native messaging host manifest. Restart Chrome.
+2. `scripts/install.sh` — builds (and signs) the release binary, generates
+   `extension/manifest.json` on first run (with a fresh `key` that pins your
+   machine's extension ID), and installs the native messaging host manifest.
    If you already have credentials, a keychain prompt can appear at the end —
    click **Always Allow**. The install script deliberately exercises every
    stored key while you're at the Mac, so the prompt can never hang a remote
    sign-in behind a locked screen.
+3. Load the extension: `chrome://extensions` → Developer mode →
+   *Load unpacked* → the `extension/` directory. Restart Chrome.
 4. Telegram approvals:
    `TELEGRAM_BOT_TOKEN=<token> "$HOME/Library/Application Support/passkeyd/bin/passkeyd" setup-telegram`
    then send any message to your bot from your phone.

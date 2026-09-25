@@ -1,8 +1,10 @@
 #!/bin/bash
 set -euo pipefail
-# usage: scripts/install.sh <chrome-extension-id>
+# usage: scripts/install.sh [chrome-extension-id]
+# Without an argument, generates extension/manifest.json (and its key) on
+# first run and derives the extension ID from it.
 cd "$(dirname "$0")/.."
-EXT_ID="${1:?usage: install.sh <chrome-extension-id>}"
+EXT_ID="${1:-$(python3 scripts/setup_extension.py)}"
 
 swift build -c release
 BIN_DIR="$HOME/Library/Application Support/passkeyd/bin"

@@ -29,8 +29,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(ROOT, ".build/debug/passkeyd")
 PORT = 8399
 TOKEN = uuid.uuid4().hex
-# Pinned by the "key" entry in extension/manifest.json.
-EXT_ID = "joblheonfgikgagbnboplknpibakflpf"
+# Pinned by the "key" entry in extension/manifest.json (generated per machine
+# by scripts/setup_extension.py; ensure_manifest creates it if missing).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from setup_extension import ensure_manifest
+
+EXT_ID = ensure_manifest()
 
 
 def find_chrome():
