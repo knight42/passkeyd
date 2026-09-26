@@ -145,11 +145,9 @@ def run_case(binary, home, mode, old_command=None):
         server.server_close()
 
 
-def main():
-    with tempfile.TemporaryDirectory(prefix='passkeyd-telegram-e2e-') as tmp:
-        work = Path(tmp).resolve()
-        main_source = (ROOT / 'Sources/passkeyd/main.swift').read_text()
-        bootstrap = '''import Foundation
+def build_fixture(work):
+    main_source = (ROOT / 'Sources/passkeyd/main.swift').read_text()
+    bootstrap = '''import Foundation
 let testHome = ProcessInfo.processInfo.environment["PASSKEYD_TEST_HOME"]!
 guard FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().path ==
       URL(fileURLWithPath: testHome).resolvingSymlinksInPath().path else {
@@ -157,11 +155,18 @@ guard FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().
 }
 URLProtocol.registerClass(TelegramFixture.self)
 '''
-        (work / 'main.swift').write_text(bootstrap + main_source)
-        sources = sorted(str(p) for p in (ROOT / 'Sources/passkeyd').glob('*.swift') if p.name != 'main.swift')
-        binary = work / 'passkeyd-fixture'
-        subprocess.run(['swiftc', *sources, str(ROOT / 'scripts/TelegramFixture.swift'),
-                        str(work / 'main.swift'), '-o', str(binary)], check=True)
+    (work / 'main.swift').write_text(bootstrap + main_source)
+    sources = sorted(str(p) for p in (ROOT / 'Sources/passkeyd').glob('*.swift') if p.name != 'main.swift')
+    binary = work / 'passkeyd-fixture'
+    subprocess.run(['swiftc', *sources, str(ROOT / 'scripts/TelegramFixture.swift'),
+                    str(work / 'main.swift'), '-o', str(binary)], check=True)
+    return binary
+
+
+def main():
+    with tempfile.TemporaryDirectory(prefix='passkeyd-telegram-e2e-') as tmp:
+        work = Path(tmp).resolve()
+        binary = build_fixture(work)
         old = run_case(binary, work / 'first-home', 'initial')
         run_case(binary, work / 'second-home', 'rebind', old)
         run_case(binary, work / 'failure-home', 'save-failure')

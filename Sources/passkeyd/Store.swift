@@ -11,39 +11,54 @@ struct Credential: Codable {
 
 final class Store {
     private let url: URL
-    private(set) var credentials: [Credential]
+    private let lockURL: URL
 
     init(dir: URL) throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         url = dir.appendingPathComponent("credentials.json")
-        if let d = try? Data(contentsOf: url) {
-            let dec = JSONDecoder()
-            dec.dateDecodingStrategy = .iso8601
-            credentials = try dec.decode([Credential].self, from: d)
-        } else {
-            credentials = []
-        }
+        lockURL = dir.appendingPathComponent("credentials.lock")
+        _ = try all()
     }
 
-    func add(_ c: Credential) throws {
+    private func read() throws -> [Credential] {
+        guard let data = try PrivateFile.readIfPresent(url) else { return [] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode([Credential].self, from: data)
+    }
+
+    func all() throws -> [Credential] {
+        let lock = try FileLock(url: lockURL)
+        defer { lock.unlock() }
+        return try read()
+    }
+
+    // Exclusion and insertion are one transaction, after Service obtains approval.
+    func add(_ c: Credential, excluding: [String] = []) throws {
+        let lock = try FileLock(url: lockURL)
+        defer { lock.unlock() }
+        var credentials = try read()
+        guard !credentials.contains(where: { $0.rpId == c.rpId && excluding.contains($0.id) }) else {
+            throw fail("already registered here (excludeCredentials)")
+        }
         credentials.append(c)
-        try save()
+        try save(credentials)
     }
 
     func remove(id: String) throws {
-        credentials.removeAll { $0.id == id }
-        try save()
+        let lock = try FileLock(url: lockURL)
+        defer { lock.unlock() }
+        try save(read().filter { $0.id != id })
     }
 
-    func find(rpId: String, allow: [String]) -> [Credential] {
-        credentials.filter { $0.rpId == rpId && (allow.isEmpty || allow.contains($0.id)) }
+    func find(rpId: String, allow: [String]) throws -> [Credential] {
+        try all().filter { $0.rpId == rpId && (allow.isEmpty || allow.contains($0.id)) }
     }
 
-    private func save() throws {
+    private func save(_ credentials: [Credential]) throws {
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         enc.dateEncodingStrategy = .iso8601
-        try enc.encode(credentials).write(to: url, options: [.atomic])
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try PrivateFile.write(enc.encode(credentials), to: url)
     }
 }

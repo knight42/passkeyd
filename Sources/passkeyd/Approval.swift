@@ -4,6 +4,7 @@ import LocalAuthentication
 
 struct ApprovalRequest {
     let rpId: String
+    let origin: String
     let userName: String
     let operation: String  // "sign in" / "register" / "test"
 }
@@ -58,22 +59,6 @@ enum LocalApproval {
     }
 }
 
-final class RateLimit {
-    private let url: URL
-
-    init(dir: URL) { url = dir.appendingPathComponent("approvals.json") }
-
-    func allow(maxPerHour: Int) -> Bool {
-        var stamps = (try? JSONDecoder().decode([Double].self, from: Data(contentsOf: url))) ?? []
-        let cutoff = Date().timeIntervalSince1970 - 3600
-        stamps.removeAll { $0 < cutoff }
-        guard stamps.count < maxPerHour else { return false }
-        stamps.append(Date().timeIntervalSince1970)
-        try? JSONEncoder().encode(stamps).write(to: url)
-        return true
-    }
-}
-
 final class Approver {
     let cfg: Config
     private let rate: RateLimit
@@ -91,7 +76,7 @@ final class Approver {
             return true
         }
         #endif
-        guard rate.allow(maxPerHour: cfg.maxApprovalsPerHour) else {
+        guard rate.allow(origin: req.origin, maxPerHour: cfg.maxApprovalsPerHour) else {
             Log.info("rate limit exceeded, denying \(req.rpId)")
             return false
         }
