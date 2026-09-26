@@ -76,8 +76,10 @@ passkeyd test-approval        # one approval round-trip
 - Every assertion requires an approval: Touch ID locally, Telegram remotely.
   Approvals are bound to a single request (one-shot nonce, 120 s TTL,
   deny-by-default) and rate-limited per hour.
-- RP ID ↔ origin binding (the anti-phishing check) is enforced in both the
-  extension and the daemon against the configured allowlist.
+- The extension service worker derives the origin from Chrome sender metadata,
+  validates RP ID binding, and constructs the signed client data. Page-provided
+  origins and hashes are ignored. The daemon independently checks RP ID binding
+  and the configured allowlist. Only top-level browser documents are supported.
 - Residual risk: malware running as your user could talk to the keychain
   directly. Signing the binary with a developer identity and Secure Enclave
   keys raises that bar. This tool is for personal use on a machine you trust.
@@ -101,9 +103,9 @@ passkeyd test-approval        # one approval round-trip
   binary directly and claim an allowlisted origin. Approvals (Touch ID /
   Telegram, with the site name in the prompt) are the backstop; read the
   prompt before tapping.
-- **Phishing resistance is only as good as the allowlist check.** RP ID ↔
-  origin binding is enforced in the extension and the daemon, but unlike a
-  platform authenticator there is no browser-level attestation of the origin.
+- **Local callers remain trusted.** Browser requests use Chrome-provided origin
+  metadata, but this does not authenticate a process invoking the native host
+  directly. The native protocol remains a local trust boundary.
 - The hourly rate limit is prompt-fatigue protection, not a security control.
 - Credentials are device-bound and don't sync. Losing the Mac (or the
   keychain) loses them — keep a native iCloud Keychain passkey enrolled as a
@@ -115,6 +117,7 @@ passkeyd test-approval        # one approval round-trip
 swift build && swift test           # unit tests
 python3 scripts/e2e_protocol.py     # native-messaging protocol e2e
 python3 scripts/e2e_browser.py      # full browser e2e (Chrome for Testing)
+node --test Tests/extension/*.test.cjs  # origin/client-data security checks
 ```
 
 See [AGENTS.md](AGENTS.md) for constraints and conventions.
