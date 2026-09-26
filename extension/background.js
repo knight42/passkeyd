@@ -5,7 +5,7 @@ const HOST = "com.zack.passkeyd";
 const b64u = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes)))
   .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 
-async function prepareRequest(payload, sender) {
+function trustedOrigin(sender) {
   // Content scripts currently run only in top-level documents. Reject opaque
   // origins, extension pages and frames instead of inventing crossOrigin data.
   if (sender.id !== chrome.runtime.id || !sender.tab || sender.frameId !== 0 ||
@@ -17,6 +17,11 @@ async function prepareRequest(payload, sender) {
       !(url.protocol === "https:" || (url.protocol === "http:" && url.hostname === "localhost"))) {
     throw new Error("untrusted request origin");
   }
+  return url;
+}
+
+async function prepareRequest(payload, sender) {
+  const url = trustedOrigin(sender);
   if (!payload || !["has", "get", "create"].includes(payload.op)) {
     throw new Error("unknown operation");
   }
@@ -54,38 +59,83 @@ async function prepareRequest(payload, sender) {
   return { request, clientDataJSON: b64u(bytes) };
 }
 
+// No page-controlled queue: at most one request per origin and four overall.
+// Reserve synchronously before any await, including client-data hashing.
+const activeOrigins = new Set();
+let budgetUpdate = Promise.resolve();
+function takeBudget(origin) {
+  const result = budgetUpdate.then(async () => {
+    // session survives MV3 worker restarts without persisting browsing history
+    // across browser sessions. Serialize updates across concurrent origins.
+    const { nativeRequestTimes = {} } = await chrome.storage.session.get("nativeRequestTimes");
+    const cutoff = Date.now() - 60000;
+    const times = Object.fromEntries(Object.entries(nativeRequestTimes)
+      .map(([key, stamps]) => [key, stamps.filter((stamp) => stamp > cutoff)])
+      .filter(([, stamps]) => stamps.length));
+    const stamps = times[origin] || [];
+    if (stamps.length >= 20) throw Object.assign(new Error("request rate limit exceeded"), { code: "rate_limited" });
+    stamps.push(Date.now());
+    times[origin] = stamps;
+    await chrome.storage.session.set({ nativeRequestTimes: times });
+  });
+  budgetUpdate = result.catch(() => {});
+  return result;
+}
+
 function callHost(request) {
   return new Promise((resolve) => {
     const port = chrome.runtime.connectNative(HOST);
     let done = false;
+    const finish = (response) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(response);
+      port.disconnect();
+    };
+    // Match the MAIN shim's request lifetime, even if a host keeps pinging.
+    const timer = setTimeout(() => finish({ ok: false, error: "passkeyd timeout" }), 180000);
     port.onMessage.addListener((resp) => {
       if (resp && resp.type === "ping") return;
-      done = true;
-      resolve(resp);
-      port.disconnect();
+      finish(resp);
     });
-    port.onDisconnect.addListener(() => {
-      if (!done) resolve({
-        ok: false,
-        error: chrome.runtime.lastError
-          ? chrome.runtime.lastError.message
-          : "passkeyd host disconnected",
-      });
-    });
-    port.postMessage(request);
+    port.onDisconnect.addListener(() => finish({
+      ok: false,
+      error: chrome.runtime.lastError ? chrome.runtime.lastError.message : "passkeyd host disconnected",
+    }));
+    try { port.postMessage(request); }
+    catch (e) { finish({ ok: false, error: String(e) }); }
   });
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.type !== "passkeyd") return;
+  let origin;
+  try {
+    origin = trustedOrigin(sender).origin;
+    if (activeOrigins.has(origin) || activeOrigins.size >= 4) {
+      sendResponse({ ok: false, error: "passkeyd is busy; retry later", errorCode: "busy" });
+      return;
+    }
+    activeOrigins.add(origin);
+  } catch (e) {
+    sendResponse({ ok: false, error: String(e) });
+    return;
+  }
   (async () => {
+    let response;
     try {
       const { request, clientDataJSON } = await prepareRequest(msg.payload, sender);
-      const response = await callHost(request);
-      sendResponse(clientDataJSON ? { ...response, clientDataJSON } : response);
+      await takeBudget(origin);
+      const result = await callHost(request);
+      response = clientDataJSON ? { ...result, clientDataJSON } : result;
     } catch (e) {
-      sendResponse({ ok: false, error: String(e) });
+      response = { ok: false, error: String(e), errorCode: e.code };
+    } finally {
+      activeOrigins.delete(origin);
     }
+    // Release before replying: a successful has immediately triggers get.
+    sendResponse(response);
   })();
-  return true; // keep sendResponse alive for validation and the native reply
+  return true;
 });
