@@ -38,7 +38,12 @@ when you're away**.
    *Load unpacked* → the `extension/` directory. Restart Chrome.
 4. Telegram approvals:
    `TELEGRAM_BOT_TOKEN=<token> "$HOME/Library/Application Support/passkeyd/bin/passkeyd" setup-telegram`
-   then send any message to your bot from your phone.
+   then send the exact `/pair …` command printed locally to your bot in a
+   **private chat** within 120 seconds. Each setup run generates a fresh
+   one-shot challenge; queued messages, groups, and old commands cannot enroll
+   an approver. Unmatched or expired challenges leave the previous identity intact.
+   The offline setup flow can be tested with `python3 scripts/e2e_telegram.py`
+   (local Bot API fixture and isolated config; no real bot needed).
 5. Check it works: `passkeyd test-approval` (Touch ID) and
    `passkeyd test-approval --remote` (Telegram).
 
@@ -64,7 +69,7 @@ enrolled as a backup — passkeyd credentials are device-bound and don't sync.
 passkeyd list                 # stored credentials
 passkeyd delete <cred-id>     # remove credential + key
 passkeyd probe                # which key backend is active
-passkeyd setup-telegram       # bind your Telegram chat id
+passkeyd setup-telegram       # pair your private Telegram chat using a fresh challenge
 passkeyd test-approval        # one approval round-trip
 ```
 
