@@ -8,7 +8,7 @@ func usage() -> Never {
 
     usage:
       passkeyd --stdio             run as native messaging host (Chrome invokes this)
-      passkeyd setup-telegram      discover your telegram chat id and write config
+      passkeyd setup-telegram      pair your private Telegram chat and write config
       passkeyd probe               print which key backend is active
       passkeyd list                list stored credentials
       passkeyd delete <cred-id>    delete a credential (metadata + key)
@@ -42,12 +42,19 @@ func setupTelegram() -> Never {
         print("token rejected by telegram")
         exit(1)
     }
+    let pairing: TelegramPairing
+    do { pairing = try TelegramPairing() } catch {
+        print("pairing setup failed: \(error)")
+        exit(1)
+    }
     print("bot ok: @\(uname)")
-    print("send any message to @\(uname) from your phone now (waiting up to 120s)…")
+    print("send this command in a PRIVATE chat with @\(uname) within 120 seconds:")
+    print(pairing.command)
+    // Print the secret only to the local operator, never to Telegram or Log.
     var offset: Int64 = 0
-    let deadline = Date().addingTimeInterval(120)
-    while Date() < deadline {
-        guard let r = tg.api("getUpdates", ["timeout": 20, "offset": offset], timeout: 30) else { continue }
+    while Date() < pairing.deadline {
+        guard let r = tg.api("getUpdates", ["timeout": 20, "offset": offset,
+                                           "allowed_updates": ["message"]], timeout: 30) else { continue }
         guard r["ok"] as? Bool == true else {
             // e.g. 409 Conflict: another process (webhook or long-poll) owns this
             // bot and is eating its updates — passkeyd needs its own bot token.
@@ -57,17 +64,18 @@ func setupTelegram() -> Never {
         guard let updates = r["result"] as? [[String: Any]] else { continue }
         for u in updates {
             if let id = u["update_id"] as? Int64 { offset = max(offset, id + 1) }
-            if let m = u["message"] as? [String: Any],
-               let chat = m["chat"] as? [String: Any],
-               let cid = chat["id"] as? Int64 {
+            if let cid = pairing.accept(u) {
                 cfg.telegramChatId = cid
-                try? cfg.save()
+                do { try cfg.save() } catch {
+                    print("could not save Telegram pairing: \(error)")
+                    exit(1)
+                }
                 print("chat id \(cid) saved to \(Config.path.path)")
                 exit(0)
             }
         }
     }
-    print("no message received; run again")
+    print("pairing expired without a matching private-chat command; run again")
     exit(1)
 }
 
