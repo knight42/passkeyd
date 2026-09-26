@@ -9,8 +9,11 @@ matters more than features here. Read this before changing anything.
 1. **RP ID validation** (`Sources/passkeyd/RpId.swift`): rpId must be a
    registrable suffix of the origin host, origin must be https (or localhost),
    and rpId must match the allowlist. This is the anti-phishing boundary and is
-   enforced in BOTH the daemon and `extension/content-main.js`. Never remove
-   either side; never loosen without tests in `Tests/passkeydTests/RpIdTests.swift`.
+   enforced in the daemon and the extension service worker (`background.js`),
+   with an advisory check in `content-main.js`. The service worker derives the
+   origin from Chrome sender metadata and constructs client data and its hash;
+   never trust page-provided origin or hash fields. Never loosen these checks
+   without tests in `Tests/passkeydTests/RpIdTests.swift` and `Tests/extension/`.
 2. **Every assertion goes through `Approver.approve`** — Touch ID locally,
    Telegram remotely, deny by default on timeout. No silent signing paths.
    The only bypass is `PASSKEYD_SKIP_APPROVAL=1`, which must stay inside
@@ -97,6 +100,7 @@ swift build                         # e2e runs the debug binary
 swift test                          # unit: CBOR/authData/rpId/store/approve-http
 python3 scripts/e2e_protocol.py    # protocol e2e incl. openssl signature verify
 python3 scripts/e2e_browser.py     # full chain in Chrome for Testing
+node --test Tests/extension/*.test.cjs  # browser trust-boundary regressions
 ```
 
 New CTAP/WebAuthn byte-layout code needs a golden-bytes unit test

@@ -179,6 +179,23 @@ def main():
           and "already pending" in (result.get("overlapMessage") or ""),
           f"overlapping get: {result.get('overlapName')}: {result.get('overlapMessage')}")
 
+    spoofed = result.get("spoofedRps", [])
+    check(len(spoofed) == 3 and all(not r.get("ok") and "RP ID" in r.get("error", "")
+                                    for r in spoofed), "forged cross-RP messages were not rejected")
+    denied = result.get("captureDisabled", {})
+    check(not denied.get("ok") and "capture is disabled" in denied.get("error", ""),
+          "page bypassed registration capture toggle")
+    raw = result.get("bridgeAssertion", {})
+    check(raw.get("ok"), f"same-RP raw assertion failed: {raw}")
+    trusted_cdj = b64u_decode(raw["clientDataJSON"])
+    trusted_cd = json.loads(trusted_cdj)
+    check(trusted_cd == {"type": "webauthn.get", "challenge": result["challenge"],
+                         "origin": f"http://localhost:{PORT}", "crossOrigin": False},
+          "page influenced trusted client data")
+    from e2e_protocol import verify_signature
+    verify_signature(spki, b64u_decode(raw["authenticatorData"]) + hashlib.sha256(trusted_cdj).digest(),
+                     b64u_decode(raw["signature"]))
+
     cdj = b64u_decode(result["clientDataJSON"])
     cd = json.loads(cdj)
     check(cd["type"] == "webauthn.get", "clientData type")

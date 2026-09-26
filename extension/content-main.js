@@ -91,7 +91,6 @@
     });
   }
 
-  const enc = new TextEncoder();
   const b64u = (buf) =>
     btoa(String.fromCharCode(...new Uint8Array(buf)))
       .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
@@ -103,16 +102,15 @@
   const bufSrc = (v) =>
     v instanceof ArrayBuffer ? v : v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength);
 
-  async function clientData(type, challenge) {
-    const json = JSON.stringify({
-      type,
-      challenge: b64u(bufSrc(challenge)),
-      origin: window.origin,
-      crossOrigin: false,
-    });
-    const bytes = enc.encode(json).buffer;
-    const hash = await crypto.subtle.digest("SHA-256", bytes);
-    return { bytes, hash: b64u(hash) };
+  // This MAIN-world check gives callers the normal WebAuthn error; the
+  // authoritative origin/RP check and client-data construction run in the
+  // extension service worker, where page scripts cannot replace built-ins.
+  function validateRpId(rpId) {
+    const rp = typeof rpId === "string" ? rpId.toLowerCase() : "";
+    if (!rp || !(location.hostname === rp || location.hostname.endsWith("." + rp))) {
+      throw new DOMException("RP ID does not match this origin.", "SecurityError");
+    }
+    return rp;
   }
 
   function fabricate(idB64u, response, isCreate) {
@@ -172,19 +170,18 @@
     }
     interceptingGet = true;
     try {
-      const rpId = pk.rpId || location.hostname;
+      const rpId = validateRpId(pk.rpId || location.hostname);
       const allow = (pk.allowCredentials || []).map((c) => b64u(bufSrc(c.id)));
-      const has = await abortable(call({ op: "has", rpId, origin: window.origin, allow }), signal);
+      const has = await abortable(call({ op: "has", rpId, allow }), signal);
       if (has.ok && has.has) {
-        const cd = await clientData("webauthn.get", pk.challenge);
         const resp = await abortable(call({
-          op: "get", rpId, origin: window.origin, clientDataHash: cd.hash, allow,
+          op: "get", rpId, challenge: b64u(bufSrc(pk.challenge)), allow,
         }), signal);
         if (!resp.ok) {
           throw new DOMException(resp.error || "passkeyd: not approved", "NotAllowedError");
         }
         return fabricate(resp.id, {
-          clientDataJSON: cd.bytes,
+          clientDataJSON: fromB64u(resp.clientDataJSON),
           authenticatorData: fromB64u(resp.authenticatorData),
           signature: fromB64u(resp.signature),
           userHandle: resp.userHandle ? fromB64u(resp.userHandle) : null,
@@ -226,13 +223,11 @@
     }
     interceptingCreate = true;
     try {
-      const rpId = (pk.rp && pk.rp.id) || location.hostname;
-      const cd = await clientData("webauthn.create", pk.challenge);
+      const rpId = validateRpId((pk.rp && pk.rp.id) || location.hostname);
       const resp = await abortable(call({
         op: "create",
         rpId,
-        origin: window.origin,
-        clientDataHash: cd.hash,
+        challenge: b64u(bufSrc(pk.challenge)),
         user: {
           id: b64u(bufSrc(pk.user.id)),
           name: pk.user.name || "",
@@ -247,7 +242,7 @@
       const authData = fromB64u(resp.authenticatorData);
       const spki = fromB64u(resp.publicKey);
       return fabricate(resp.id, {
-        clientDataJSON: cd.bytes,
+        clientDataJSON: fromB64u(resp.clientDataJSON),
         attestationObject: fromB64u(resp.attestationObject),
         getAuthenticatorData: () => authData,
         getPublicKey: () => spki,

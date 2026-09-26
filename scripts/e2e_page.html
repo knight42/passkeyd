@@ -46,6 +46,43 @@ window.addEventListener("load", async () => {
     const challenge = crypto.getRandomValues(new Uint8Array(32));
     out.challenge = b64u(challenge);
 
+    // Exercise the page-to-extension boundary directly, bypassing the MAIN
+    // shim just as an injected script would. Negative ids avoid shim requests.
+    let bridgeSeq = 0;
+    function bridge(payload) {
+      return new Promise((resolve, reject) => {
+        const reqId = --bridgeSeq;
+        const receive = (ev) => {
+          const resp = ev.data && ev.data.__passkeyd_resp;
+          if (ev.source !== window || !resp || resp.reqId !== reqId) return;
+          clearTimeout(timer);
+          window.removeEventListener("message", receive);
+          resolve(resp);
+        };
+        const timer = setTimeout(() => {
+          window.removeEventListener("message", receive);
+          reject(new Error("raw bridge timed out"));
+        }, 15000);
+        window.addEventListener("message", receive);
+        window.postMessage({ __passkeyd_req: { ...payload, reqId } }, window.origin);
+      });
+    }
+    out.spoofedRps = [];
+    for (const op of ["has", "get", "create"]) {
+      out.spoofedRps.push(await bridge({ op, rpId: "github.com",
+        origin: "https://github.com", challenge: out.challenge }));
+    }
+    out.captureDisabled = await bridge({ op: "create", rpId: "localhost",
+      challenge: out.challenge, user: { id: "YQ", name: "test" }, algs: [-7] });
+    const forged = new TextEncoder().encode(JSON.stringify({
+      type: "webauthn.get", challenge: out.challenge, origin: "https://github.com",
+      crossOrigin: false,
+    }));
+    out.bridgeAssertion = await bridge({ op: "get", rpId: "localhost",
+      origin: "https://github.com", challenge: out.challenge,
+      clientDataJSON: b64u(forged),
+      clientDataHash: b64u(await crypto.subtle.digest("SHA-256", forged)) });
+
     // A pre-aborted request must reject with AbortError immediately and must
     // not consume the intercept window.
     try {
