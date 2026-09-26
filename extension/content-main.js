@@ -173,6 +173,9 @@
       const rpId = validateRpId(pk.rpId || location.hostname);
       const allow = (pk.allowCredentials || []).map((c) => b64u(bufSrc(c.id)));
       const has = await abortable(call({ op: "has", rpId, allow }), signal);
+      if (has.errorCode === "busy" || has.errorCode === "rate_limited") {
+        throw new DOMException(has.error, "NotAllowedError");
+      }
       if (has.ok && has.has) {
         const resp = await abortable(call({
           op: "get", rpId, challenge: b64u(bufSrc(pk.challenge)), allow,

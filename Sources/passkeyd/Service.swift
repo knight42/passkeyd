@@ -46,7 +46,7 @@ final class Service {
     private func has(_ req: [String: Any]) throws -> [String: Any] {
         let (rpId, _) = try rpParams(req)
         let allow = req["allow"] as? [String] ?? []
-        let found = !store.find(rpId: rpId, allow: allow).isEmpty
+        let found = !(try store.find(rpId: rpId, allow: allow)).isEmpty
         Log.info("has rp=\(rpId) allow=\(allow.map { $0.prefix(8) }) -> \(found)")
         return ["ok": true, "has": found]
     }
@@ -58,11 +58,11 @@ final class Service {
             throw fail("missing clientDataHash")
         }
         let allow = req["allow"] as? [String] ?? []
-        guard let cred = store.find(rpId: rpId, allow: allow).first else {
+        guard let cred = try store.find(rpId: rpId, allow: allow).first else {
             throw fail("no credential for \(rpId)")
         }
         Log.info("get rp=\(rpId) origin=\(origin) cred=\(cred.id.prefix(8))…")
-        guard approver.approve(.init(rpId: rpId, userName: cred.userName, operation: "sign in")) else {
+        guard approver.approve(.init(rpId: rpId, origin: origin, userName: cred.userName, operation: "sign in")) else {
             throw fail("not approved")
         }
         let key = try backendFor(cred.backend).load(tag: cred.id)
@@ -87,11 +87,8 @@ final class Service {
         let algs = req["algs"] as? [Int] ?? [-7]
         guard algs.contains(-7) else { throw fail("RP does not accept ES256") }
         let excludeIds = req["excludeIds"] as? [String] ?? []
-        if store.credentials.contains(where: { excludeIds.contains($0.id) }) {
-            throw fail("already registered here (excludeCredentials)")
-        }
         Log.info("create rp=\(rpId) origin=\(origin) user=\(userName)")
-        guard approver.approve(.init(rpId: rpId, userName: userName, operation: "register")) else {
+        guard approver.approve(.init(rpId: rpId, origin: origin, userName: userName, operation: "register")) else {
             throw fail("not approved")
         }
         var idBytes = Data(count: 32)
@@ -99,8 +96,15 @@ final class Service {
         let id = B64URL.encode(idBytes)
         let key = try backend.generate(tag: id)
         let authData = AuthData.attested(rpId: rpId, credentialId: idBytes, x: key.x, y: key.y)
-        try store.add(.init(id: id, rpId: rpId, userName: userName, userHandle: userHandle,
-                            backend: backend.name, createdAt: Date()))
+        do {
+            // Do not reveal any exclusion match until approval. Store scopes
+            // matches to this RP and checks them atomically with insertion.
+            try store.add(.init(id: id, rpId: rpId, userName: userName, userHandle: userHandle,
+                                backend: backend.name, createdAt: Date()), excluding: excludeIds)
+        } catch {
+            backend.destroy(tag: id)
+            throw error
+        }
         return [
             "ok": true,
             "id": id,

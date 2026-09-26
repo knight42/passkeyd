@@ -5,11 +5,17 @@ const vm = require('node:vm');
 const { webcrypto, createHash } = require('node:crypto');
 const source = fs.readFileSync(`${__dirname}/../../extension/background.js`, 'utf8');
 
-function bridge(captureCreate = false) {
+function bridge(captureCreate = false, autoReply = true) {
   let listener;
   const sent = [];
+  const replies = [];
+  const timeouts = [];
+  const session = {};
   const chrome = {
-    storage: { local: { get: async () => ({ captureCreate }) } },
+    storage: {
+      local: { get: async () => ({ captureCreate }) },
+      session: { get: async () => structuredClone(session), set: async (data) => Object.assign(session, data) },
+    },
     runtime: {
       id: 'test-extension',
       onMessage: { addListener: (fn) => { listener = fn; } },
@@ -21,15 +27,16 @@ function bridge(captureCreate = false) {
           disconnect() {},
           postMessage(request) {
             sent.push(request);
-            queueMicrotask(() => reply({ ok: true, id: 'credential' }));
+            replies.push((response = { ok: true, id: 'credential' }) => reply(response));
+            if (autoReply) queueMicrotask(replies.at(-1));
           },
         };
       },
     },
   };
-  vm.runInNewContext(source, { chrome, URL, TextEncoder, Uint8Array, btoa, atob, crypto: webcrypto });
+  vm.runInNewContext(source, { chrome, URL, TextEncoder, Uint8Array, btoa, atob, crypto: webcrypto, setTimeout: (fn) => { timeouts.push(fn); return fn; }, clearTimeout() {} });
   return {
-    sent,
+    sent, replies, session, timeouts,
     call: (payload, overrides = {}) => new Promise((resolve) => listener(
       { type: 'passkeyd', payload },
       { id: chrome.runtime.id, tab: { id: 1 }, frameId: 0,
@@ -105,4 +112,57 @@ test('localhost and valid has requests remain supported', async () => {
   assert.equal(result.ok, true);
   assert.equal(b.sent[0].origin, 'http://localhost:8399');
   assert.equal(b.sent[0].clientDataHash, undefined);
+});
+
+test('burst from one page opens only one host and other origins still work', async () => {
+  const b = bridge(false, false);
+  const first = b.call({ op: 'has', rpId: 'example.okta.com' });
+  const flood = await Promise.all(Array.from({ length: 100 }, () => b.call({ op: 'has', rpId: 'example.okta.com' })));
+  assert.ok(flood.every(r => r.errorCode === 'busy'));
+  const other = b.call({ op: 'has', rpId: 'github.com' }, { origin: 'https://github.com', url: 'https://github.com/' });
+  await new Promise(setImmediate);
+  assert.equal(b.sent.length, 2);
+  b.replies.forEach(reply => reply());
+  assert.equal((await first).ok, true);
+  assert.equal((await other).ok, true);
+});
+
+test('global host cap rejects excess instead of queueing and releases slots', async () => {
+  const b = bridge(false, false);
+  const request = (i) => b.call({ op: 'has', rpId: 'okta.com' },
+    { origin: `https://tenant${i}.okta.com`, url: `https://tenant${i}.okta.com/` });
+  const active = [0, 1, 2, 3].map(request);
+  assert.equal((await request(4)).errorCode, 'busy');
+  await new Promise(setImmediate);
+  assert.equal(b.sent.length, 4);
+  b.replies.forEach(reply => reply());
+  await Promise.all(active);
+  const next = request(4);
+  await new Promise(setImmediate);
+  assert.equal(b.sent.length, 5);
+  b.replies[4]();
+  assert.equal((await next).ok, true);
+});
+
+test('sequential has floods are throttled without consuming another origin budget', async () => {
+  const b = bridge();
+  for (let i = 0; i < 20; i++) assert.equal((await b.call({ op: 'has', rpId: 'example.okta.com' })).ok, true);
+  assert.equal((await b.call({ op: 'has', rpId: 'example.okta.com' })).errorCode, 'rate_limited');
+  assert.equal(b.sent.length, 20);
+  assert.equal((await b.call({ op: 'has', rpId: 'github.com' },
+    { origin: 'https://github.com', url: 'https://github.com/' })).ok, true);
+});
+
+test('host keepalive cannot retain an admission slot past the request deadline', async () => {
+  const b = bridge(false, false);
+  const first = b.call({ op: 'has', rpId: 'example.okta.com' });
+  await new Promise(setImmediate);
+  b.replies[0]({ type: 'ping' });
+  assert.equal((await b.call({ op: 'has', rpId: 'example.okta.com' })).errorCode, 'busy');
+  b.timeouts[0]();
+  assert.match((await first).error, /timeout/);
+  const next = b.call({ op: 'has', rpId: 'example.okta.com' });
+  await new Promise(setImmediate);
+  b.replies[1]();
+  assert.equal((await next).ok, true);
 });

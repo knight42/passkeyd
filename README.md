@@ -47,6 +47,11 @@ when you're away**.
 5. Check it works: `passkeyd test-approval` (Touch ID) and
    `passkeyd test-approval --remote` (Telegram).
 
+Existing credentials and config remain compatible. The per-origin quota uses
+a new `approvals-by-origin.json` file; the old global attempt history is not
+carried over. After updating, run `scripts/install.sh`, reload the extension,
+and restart Chrome so older native hosts are no longer running.
+
 Config lives in `~/Library/Application Support/passkeyd/config.json`
 (`allowedRps`, timeouts, rate limit, `forceRemote`). Logs:
 `~/Library/Logs/passkeyd.log`.
@@ -80,7 +85,15 @@ passkeyd test-approval        # one approval round-trip
   signatures.
 - Every assertion requires an approval: Touch ID locally, Telegram remotely.
   Approvals are bound to a single request (one-shot nonce, 120 s TTL,
-  deny-by-default) and rate-limited per hour.
+  deny-by-default). `maxApprovalsPerHour` limits attempts **per origin**; one
+  site cannot consume another site's quota. Updates are locked across processes.
+- Browser requests are bounded: one outstanding request per origin, four
+  overall, and 20 native requests per minute per origin (a sign-in usually uses
+  a lookup plus an assertion). Busy or limited requests fail immediately.
+- Only one remote approval or setup session per bot may poll on this Mac.
+  A concurrent request is denied; retry after the pending request finishes.
+- Credential writes reload under a cross-process lock. Exclusion checks are
+  scoped to the requesting RP and are disclosed only after approval.
 - The extension service worker derives the origin from Chrome sender metadata,
   validates RP ID binding, and constructs the signed client data. Page-provided
   origins and hashes are ignored. The daemon independently checks RP ID binding
@@ -96,8 +109,8 @@ passkeyd test-approval        # one approval round-trip
   user was verified; in reality, whoever controls your Telegram session (an
   unlocked phone, a leaked bot token) can approve sign-ins whenever the
   daemon is reachable. Guard your phone and bot token accordingly, and give
-  the bot its own dedicated token — a second consumer of the same bot eats
-  the approval callbacks.
+  the bot its own dedicated token. The local polling lock cannot coordinate
+  another machine or an unrelated application consuming the same bot.
 - **Software keys are extractable.** Without a paid developer identity the
   binary can't use the Secure Enclave, so keys are ordinary login-keychain
   items: anything running as your user that can answer (or has ACL access to)
@@ -111,7 +124,9 @@ passkeyd test-approval        # one approval round-trip
 - **Local callers remain trusted.** Browser requests use Chrome-provided origin
   metadata, but this does not authenticate a process invoking the native host
   directly. The native protocol remains a local trust boundary.
-- The hourly rate limit is prompt-fatigue protection, not a security control.
+- The per-origin hourly limit is prompt-fatigue protection. An attacker
+  executing scripts within a legitimate origin can still exhaust that origin's
+  budget; this does not authorize signing or consume other origins' quotas.
 - Credentials are device-bound and don't sync. Losing the Mac (or the
   keychain) loses them — keep a native iCloud Keychain passkey enrolled as a
   backup on every important account.
@@ -123,6 +138,10 @@ swift build && swift test           # unit tests
 python3 scripts/e2e_protocol.py     # native-messaging protocol e2e
 python3 scripts/e2e_browser.py      # full browser e2e (Chrome for Testing)
 node --test Tests/extension/*.test.cjs  # origin/client-data security checks
+python3 scripts/e2e_state.py        # multiprocess credential and quota updates
+python3 scripts/e2e_telegram.py     # pairing CLI with local Bot API fixture
+python3 scripts/e2e_approvals.py    # approvals, polling ownership, exclusion privacy
+python3 scripts/e2e_admission.py    # browser flood limits with keyless native host
 ```
 
 See [AGENTS.md](AGENTS.md) for constraints and conventions.

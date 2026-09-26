@@ -21,11 +21,19 @@ matters more than features here. Read this before changing anything.
 3. **SE key access control stays `.privateKeyUsage` only.** Adding
    `.userPresence`/`.biometryAny` deadlocks the remote-approval path (the ACL
    prompt can only be answered locally).
-4. **Approval nonces are one-shot** (`Waiter.resolve` ignores repeats), TTL'd,
-   and the Telegram handler only accepts callbacks from the configured chat id.
+4. **Approval nonces are one-shot and TTL'd.** Remote polling is synchronous
+   under a per-bot cross-process lock; stop at the first matching decision.
+   Validate the configured user/chat, message id, nonce, and deadline. Setup
+   must acquire the same lock so it cannot consume approval callbacks.
 5. **Never log secrets**: no private keys, no clientDataHash payload bodies,
    no Telegram token. Log rpId, credential id prefix, outcome.
 6. The config file and credential store are written with 0600 — keep it that way.
+7. Credential updates reload inside the sidecar lock and atomically replace
+   the data file. Exclusion checks must be RP-scoped and happen only after
+   approval. Quotas are per-origin and reserve under a cross-process lock.
+8. The extension admits at most one request per origin and four overall, with
+   20 native requests per minute per origin. Reject excess requests; do not
+   create an unbounded queue or forward busy/rate-limited lookups to native UI.
 
 ## Protocol conventions
 
@@ -101,6 +109,10 @@ swift test                          # unit: CBOR/authData/rpId/store/approve-htt
 python3 scripts/e2e_protocol.py    # protocol e2e incl. openssl signature verify
 python3 scripts/e2e_browser.py     # full chain in Chrome for Testing
 node --test Tests/extension/*.test.cjs  # browser trust-boundary regressions
+python3 scripts/e2e_state.py       # actual multiprocess store/quota transactions
+python3 scripts/e2e_telegram.py    # local setup CLI fixture
+python3 scripts/e2e_approvals.py   # competing approval/setup processes and exclusions
+python3 scripts/e2e_admission.py   # real Chrome flood admission, keyless host fixture
 ```
 
 New CTAP/WebAuthn byte-layout code needs a golden-bytes unit test
@@ -116,8 +128,9 @@ CryptoKit) verification round-trip, not just "no error".
   MAIN world — it must not use `chrome.*` APIs; relay through
   `content-isolated.js` via `window.postMessage`.
 - Unknown requests must **fall through to the browser's native WebAuthn**
-  (return `ORIG.get`/`ORIG.create`), never break the page. **One deliberate
-  exception**: a modal request arriving while another is already inside
+  (return `ORIG.get`/`ORIG.create`). Busy/rate-limited admission failures reject
+  with `NotAllowedError` rather than opening a second authentication UI.
+  Likewise, a modal request arriving while another is already inside
   passkeyd is rejected with `NotAllowedError`, never forwarded — forwarding it
   pops the platform (iCloud Keychain) sheet next to our own approval prompt.
   That is what the `interceptingGet`/`interceptingCreate` guards are for; do

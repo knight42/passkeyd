@@ -42,6 +42,12 @@ func setupTelegram() -> Never {
         print("token rejected by telegram")
         exit(1)
     }
+    let pollingLock: FileLock
+    do { pollingLock = try tg.acquirePollingLock() } catch {
+        print("Telegram polling busy or unavailable; retry setup after pending approvals finish")
+        exit(1)
+    }
+    defer { pollingLock.unlock() }
     let pairing: TelegramPairing
     do { pairing = try TelegramPairing() } catch {
         print("pairing setup failed: \(error)")
@@ -89,18 +95,21 @@ switch args[1] {
 case "probe":
     print(probeBackend { print($0) }.name)
 case "list":
-    for c in makeService().store.credentials {
+    for c in try makeService().store.all() {
         print("\(c.id)  \(c.rpId)  \(c.userName)  \(c.backend)  \(c.createdAt)")
     }
 case "delete":
     guard args.count == 3 else { usage() }
     let s = makeService()
-    guard let c = s.store.credentials.first(where: { $0.id == args[2] }) else {
+    guard let c = try s.store.all().first(where: { $0.id == args[2] }) else {
         print("not found")
         exit(1)
     }
     s.backendFor(c.backend).destroy(tag: c.id)
-    try? s.store.remove(id: c.id)
+    do { try s.store.remove(id: c.id) } catch {
+        print("could not remove credential metadata: \(error)")
+        exit(1)
+    }
     print("deleted \(c.id) (\(c.rpId))")
 case "setup-telegram":
     setupTelegram()
@@ -112,7 +121,7 @@ case "test-sign":
     // prompt never hangs an invisible sign-in behind a locked screen.
     var failed = false
     let s = makeService()
-    for c in s.store.credentials {
+    for c in try s.store.all() {
         do {
             let key = try s.backendFor(c.backend).load(tag: c.id)
             _ = try key.signDER(Data("passkeyd test-sign".utf8))
@@ -125,7 +134,7 @@ case "test-sign":
     exit(failed ? 1 : 0)
 case "test-approval":
     let s = makeService()
-    let req = ApprovalRequest(rpId: "example.com", userName: "test", operation: "test")
+    let req = ApprovalRequest(rpId: "example.com", origin: "https://example.com", userName: "test", operation: "test")
     let ok: Bool
     if args.contains("--remote") {
         ok = RemoteApproval(cfg: s.cfg).request(req)

@@ -5,7 +5,7 @@ struct Config: Codable {
     var telegramChatId: Int64 = 0
     var allowedRps: [String] = ["okta.com", "github.com", "webauthn.io"]
     var remoteTimeoutSec: Int = 120
-    // Prompt-fatigue backstop, not a security boundary (every prompt still
+    // Per-origin prompt-fatigue backstop (every prompt still
     // needs an explicit approve). One RP sign-in can burn several attempts
     // (Okta fires get twice per click and auto-retries on failure), so keep
     // enough headroom for normal interactive use.

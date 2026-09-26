@@ -1,29 +1,19 @@
+import CryptoKit
 import Foundation
 import Security
-
-final class Waiter {
-    private let sem = DispatchSemaphore(value: 0)
-    private let lock = NSLock()
-    private(set) var decision: Bool?
-
-    func resolve(_ v: Bool) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard decision == nil else { return }
-        decision = v
-        sem.signal()
-    }
-
-    func wait(until deadline: Date) -> Bool? {
-        _ = sem.wait(timeout: .now() + max(0, deadline.timeIntervalSinceNow))
-        return decision
-    }
-}
 
 final class Telegram {
     let token: String
 
     init(token: String) { self.token = token }
+
+    // One polling owner per bot on this machine, shared by setup and approvals.
+    // Keep the token out of filenames, and fail busy rather than queue prompts.
+    func acquirePollingLock(dir: URL = Config.dir) throws -> FileLock {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let key = SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
+        return try FileLock(url: dir.appendingPathComponent("telegram-\(key).lock"), nonBlocking: true)
+    }
 
     func api(_ method: String, _ params: [String: Any] = [:], timeout: TimeInterval = 15) -> [String: Any]? {
         guard let url = URL(string: "https://api.telegram.org/bot\(token)/\(method)") else { return nil }
@@ -58,11 +48,17 @@ final class RemoteApproval {
             return false
         }
         var nonceBytes = Data(count: 16)
-        _ = nonceBytes.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!) }
+        let status = nonceBytes.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!) }
+        guard status == errSecSuccess else { return false }
         let nonce = nonceBytes.map { String(format: "%02x", $0) }.joined()
 
-        let waiter = Waiter()
         let tg = Telegram(token: cfg.telegramToken)
+        let pollingLock: FileLock
+        do { pollingLock = try tg.acquirePollingLock() } catch {
+            Log.info("Telegram polling busy or unavailable; denying request")
+            return false
+        }
+        defer { pollingLock.unlock() }
         let host = ProcessInfo.processInfo.hostName
         let text = """
         🔐 passkey approval
@@ -85,35 +81,43 @@ final class RemoteApproval {
 
         let deadline = Date().addingTimeInterval(TimeInterval(cfg.remoteTimeoutSec))
         let chatId = cfg.telegramChatId
-        Thread.detachNewThread {
-            var offset: Int64 = 0
-            while Date() < deadline, waiter.decision == nil {
-                guard let r = tg.api("getUpdates",
-                                     ["timeout": 20, "offset": offset,
-                                      "allowed_updates": ["callback_query"]],
-                                     timeout: 30) else { continue }
-                guard r["ok"] as? Bool == true else {
-                    Log.info("getUpdates error: \(r["description"] as? String ?? "\(r)")")
-                    Thread.sleep(forTimeInterval: 2)  // error responses return fast; don't hammer
-                    continue
-                }
-                guard let updates = r["result"] as? [[String: Any]] else { continue }
-                for u in updates {
-                    if let id = u["update_id"] as? Int64 { offset = max(offset, id + 1) }
-                    guard let cq = u["callback_query"] as? [String: Any],
-                          let data = cq["data"] as? String,
-                          let from = cq["from"] as? [String: Any],
-                          let fromId = from["id"] as? Int64,
-                          let cqId = cq["id"] as? String else { continue }
-                    _ = tg.api("answerCallbackQuery", ["callback_query_id": cqId])
-                    guard fromId == chatId else { continue }  // only the configured user
-                    if data == "a:\(nonce)" { waiter.resolve(true) }
-                    else if data == "d:\(nonce)" { waiter.resolve(false) }
-                }
+        // Poll synchronously while holding the lease: a timed-out worker must
+        // never outlive its request and consume the next request's callbacks.
+        var offset: Int64 = 0
+        var decision: Bool?
+        while Date() < deadline, decision == nil {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { break }
+            guard let r = tg.api("getUpdates",
+                                ["timeout": min(20, max(1, Int(remaining))), "offset": offset,
+                                 "allowed_updates": ["callback_query"]],
+                                timeout: min(30, remaining)) else { continue }
+            guard Date() < deadline else { break }
+            guard r["ok"] as? Bool == true else {
+                Log.info("getUpdates failed")
+                Thread.sleep(forTimeInterval: min(2, max(0, deadline.timeIntervalSinceNow)))
+                continue
+            }
+            guard let updates = r["result"] as? [[String: Any]] else { continue }
+            for u in updates {
+                if let id = u["update_id"] as? Int64 { offset = max(offset, id + 1) }
+                guard Date() < deadline,
+                      let cq = u["callback_query"] as? [String: Any],
+                      let data = cq["data"] as? String,
+                      let from = cq["from"] as? [String: Any],
+                      from["id"] as? Int64 == chatId,
+                      let message = cq["message"] as? [String: Any],
+                      message["message_id"] as? Int == msgId,
+                      let chat = message["chat"] as? [String: Any],
+                      chat["id"] as? Int64 == chatId,
+                      let cqId = cq["id"] as? String,
+                      data == "a:\(nonce)" || data == "d:\(nonce)" else { continue }
+                decision = data == "a:\(nonce)"
+                _ = tg.api("answerCallbackQuery", ["callback_query_id": cqId])
+                break // one-shot; later updates cannot change the decision
             }
         }
-
-        let ok = waiter.wait(until: deadline) ?? false
+        let ok = decision ?? false
         _ = tg.api("editMessageText", ["chat_id": chatId, "message_id": msgId,
                                        "text": text + "\n\n" + (ok ? "✅ approved" : "❌ denied / expired")])
         return ok
