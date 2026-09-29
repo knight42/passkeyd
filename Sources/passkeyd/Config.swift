@@ -3,7 +3,7 @@ import Foundation
 struct Config: Codable {
     var telegramToken: String = ""
     var telegramChatId: Int64 = 0
-    var allowedRps: [String] = ["okta.com", "github.com", "webauthn.io"]
+    var allowedRps: [String] = ["okta.com", "github.com", "google.com", "webauthn.io"]
     var remoteTimeoutSec: Int = 120
     // Per-origin prompt-fatigue backstop (every prompt still
     // needs an explicit approve). One RP sign-in can burn several attempts
