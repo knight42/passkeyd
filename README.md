@@ -6,7 +6,7 @@ when you're away**.
 
 ## What it does
 
-- **Passkeys for allowlisted sites** (Okta, webauthn.io, …) served by a local
+- **Passkeys for allowlisted sites** (Okta, GitHub, Google, webauthn.io) served by a local
   daemon through a small Chrome extension. Keys live in the Secure Enclave when
   available (signed binary), otherwise in your login keychain.
 - **At your Mac**: every sign-in asks for Touch ID (or your password). One
@@ -27,9 +27,10 @@ when you're away**.
    self-signed code-signing identity (`passkeyd-codesign`). With it,
    `install.sh` signs the binary, so the keychain's **Always Allow** survives
    rebuilds; without it, every reinstall re-asks once.
-2. `scripts/install.sh` — builds (and signs) the release binary, generates
-   `extension/manifest.json` on first run (with a fresh `key` that pins your
-   machine's extension ID), and installs the native messaging host manifest.
+2. `scripts/install.sh` — builds (and signs) the release binary, refreshes
+   `extension/manifest.json` from the template (preserving the `key` that pins
+   your machine's extension ID, or generating one on first run), and installs
+   the native messaging host manifest.
    If you already have credentials, a keychain prompt can appear at the end —
    click **Always Allow**. The install script deliberately exercises every
    stored key while you're at the Mac, so the prompt can never hang a remote
@@ -55,6 +56,13 @@ and restart Chrome so older native hosts are no longer running.
 Config lives in `~/Library/Application Support/passkeyd/config.json`
 (`allowedRps`, timeouts, rate limit, `forceRemote`). Logs:
 `~/Library/Logs/passkeyd.log`.
+
+Google support covers `https://*.google.com/*`. For an existing installation,
+add `"google.com"` to `allowedRps` in your config; existing configs are preserved
+on upgrade. Run `python3 scripts/setup_extension.py` to refresh the extension
+manifest, reload the extension, and refresh Google pages. Enable registration
+capture before enrolling a new Google credential into passkeyd. Conditional
+autofill continues to use the browser's native authenticator.
 
 ## Register a passkey
 
