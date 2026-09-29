@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 # usage: scripts/install.sh [chrome-extension-id]
-# Without an argument, generates extension/manifest.json (and its key) on
-# first run and derives the extension ID from it.
+# Without an argument, refreshes extension/manifest.json from the template,
+# preserves its key (generating one on first run), and derives the extension ID.
 cd "$(dirname "$0")/.."
 EXT_ID="${1:-$(python3 scripts/setup_extension.py)}"
 

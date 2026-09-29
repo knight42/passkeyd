@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Write extension/manifest.json from the template with a freshly generated
-"key", which pins the unpacked extension's ID on this machine. The RSA pair
+"""Write extension/manifest.json from the template with a stable "key",
+generated on first run, which pins the extension's ID on this machine. The RSA pair
 is only a source of ID bits — the private half would matter only for Web
-Store publishing and is discarded. Idempotent: if the manifest already
-exists, just prints its extension ID (install.sh consumes that).
+Store publishing and is discarded. Refreshes the manifest from the template
+while preserving an existing key and extension ID (install.sh consumes that).
 """
 import base64
 import hashlib
@@ -24,18 +24,20 @@ def ext_id(spki_der):
 
 
 def ensure_manifest():
+    manifest = json.load(open(TEMPLATE))
     if os.path.exists(MANIFEST):
         key = json.load(open(MANIFEST))["key"]
-        return ext_id(base64.b64decode(key))
-    priv = subprocess.run(
-        ["openssl", "genpkey", "-algorithm", "RSA",
-         "-pkeyopt", "rsa_keygen_bits:2048", "-outform", "DER"],
-        capture_output=True, check=True).stdout
-    spki = subprocess.run(
-        ["openssl", "pkey", "-inform", "DER", "-pubout", "-outform", "DER"],
-        input=priv, capture_output=True, check=True).stdout
-    manifest = json.load(open(TEMPLATE))
-    manifest["key"] = base64.b64encode(spki).decode()
+        spki = base64.b64decode(key)
+    else:
+        priv = subprocess.run(
+            ["openssl", "genpkey", "-algorithm", "RSA",
+             "-pkeyopt", "rsa_keygen_bits:2048", "-outform", "DER"],
+            capture_output=True, check=True).stdout
+        spki = subprocess.run(
+            ["openssl", "pkey", "-inform", "DER", "-pubout", "-outform", "DER"],
+            input=priv, capture_output=True, check=True).stdout
+        key = base64.b64encode(spki).decode()
+    manifest["key"] = key
     with open(MANIFEST, "w") as f:
         json.dump(manifest, f, indent=2)
         f.write("\n")
